@@ -1,0 +1,99 @@
+{
+	"CS" : "file.dxil",
+	"RootSignature" : "rootsig.rs",
+	"RootParameters" : [
+		{ "index" : 0, "type" : "ResourceTable", "offset" : 10 },
+		{ "index" : 1, "type" : "SamplerTable", "offset" : 10 },
+		{ "index" : 2, "type" : "UAV", "resource" : "res0" : "offset" : 10 },
+		{ "index" : 3, "type" : "CBV", "resource" : "res0" : "offset" : 10 },
+		{ "index" : 4, "type" : "SRV", "resource" : "res0" : "offset" : 10 },
+		{ "index" : 5, "type" : "Constant", "offset" : 10, "data" : [ 40, 50 ] }
+	],
+	"Dispatch" : [ 100, 1, 1 ],
+	"Resources" : [
+		{
+			"name" : "res0",
+
+			"Dimension" : "BUFFER",
+			"Width" : 100,
+			"Height" : 2,
+			"DepthOrArraySize" : 1,
+			"MipLevels" : 1,
+			"Format" : "UNKNOWN",
+			"SampleCount" : 1,
+			"Flags" : 0,
+			"FlagUAV" : 1,
+			"FlagRTV" : 1,
+			"FlagDSV" : 1,
+
+			"data" : [ "res0.bin" ]
+		},
+		{
+			"name" : "res1",
+
+			"Dimension" : "TEXTURE1D",
+			"Width" : 100,
+			"Height" : 1,
+			"DepthOrArraySize" : 1,
+			"MipLevels" : 2,
+			"Format" : "R32_UINT",
+			"SampleCount" : 1,
+			"Flags" : 0,
+			"FlagUAV" : 1,
+			"FlagRTV" : 1,
+			"FlagDSV" : 1,
+
+			"data" : [ "res1_level0.bin", "res0_level1.bin" ]
+		}
+	],
+	"SRV" : [
+		{
+			"HeapOffset" : 10,
+			"Resource" : "res0",
+
+			"Format" : "UNKNOWN",
+			"ViewDimension" : "TEXTURE1D",
+			"MostDetailedMip" : 0,
+			"MipLevels" : 10,
+			"ResourceMinLODClamp": 0.0
+		}
+	],
+	"UAV" : [
+		{
+			"HeapOffset" : 10,
+			"Resource" : "res0",
+			"CounterResource" : "res1",
+
+			"Format" : "UNKNOWN",
+			"ViewDimension" : "TEXTURE1D",
+			"Shader4ComponentMapping" : 0,
+			"MostDetailedMip" : 0,
+			"MipLevels" : 10,
+			"ResourceMinLODClamp": 0.0
+		}
+	],
+	"CBV" : [
+		{
+			"HeapOffset" : 100,
+			"Resource" : "res1",
+
+			"BufferLocation" : 1000,
+			"SizeInBytes" : 500
+		}
+	],
+	"Sampler" : [
+		{
+			"HeapOffset" : 50,
+			"Filter" : "BLAH",
+			"AddressU" : "ADDR",
+			"AddressV" : "ADDRV",
+			"AddressW" : "ADDRW",
+			"MipLODBias" : 0.0,
+			"MaxAnisotropy" : 16,
+			"ComparisonFunc" : "COMP",
+			"BorderColor" : [ 0, 1, 2, 3 ],
+			"MinLOD" : 0.0,
+			"MaxLOD" : 1.0
+		}
+	]
+}
