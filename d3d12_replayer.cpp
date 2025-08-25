@@ -435,6 +435,7 @@ struct Resource
 	ComPtr<ID3D12Resource> gpu_staging_resource;
 	D3D12_RESOURCE_STATES current_state = D3D12_RESOURCE_STATE_COPY_DEST;
 	D3D12_RESOURCE_STATES execution_state = D3D12_RESOURCE_STATE_COMMON;
+	std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> placed_footprints;
 	bool dirty = false;
 	bool dirty_gpu_staging = true;
 };
@@ -537,33 +538,6 @@ PipelineState Device::create_compute_shader(const std::string &path, const std::
 	return pipe;
 }
 
-static DXGI_FORMAT convert_format_to_non_dsv_format(DXGI_FORMAT fmt)
-{
-	// FIXME: Also find some way to support stencil?
-
-	switch (fmt)
-	{
-	case DXGI_FORMAT_D32_FLOAT:
-	case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
-	case DXGI_FORMAT_D24_UNORM_S8_UINT:
-	case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
-	case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
-	case DXGI_FORMAT_R32G8X24_TYPELESS:
-	case DXGI_FORMAT_R24G8_TYPELESS:
-		return DXGI_FORMAT_R32_FLOAT;
-
-	case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
-	case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
-		return DXGI_FORMAT_R8_UINT;
-
-	case DXGI_FORMAT_D16_UNORM:
-		return DXGI_FORMAT_R16_FLOAT;
-
-	default:
-		return fmt;
-	}
-}
-
 Resource Device::create_resource_from_desc(const std::string &base_path, const rapidjson::Value &value)
 {
 	D3D12_HEAP_PROPERTIES heap_props = {};
@@ -621,6 +595,16 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 		return {};
 	}
 
+	// Keep the copy on GPU for fast refreshes of UAVs.
+	if (FAILED(device->CreateCommittedResource(
+			&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+			IID_ID3D12Resource, res.gpu_staging_resource.ppv())))
+	{
+		LOGE("Failed to create resource.\n");
+		return {};
+	}
+
 	heap_props.Type = D3D12_HEAP_TYPE_CUSTOM;
 	heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_COMBINE;
 	heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
@@ -628,48 +612,66 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 	                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
 	                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
 
-	desc.Format = convert_format_to_non_dsv_format(desc.Format);
-
-	if (FAILED(device->CreateCommittedResource(
-			&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
-			D3D12_RESOURCE_STATE_COMMON, nullptr,
-			IID_ID3D12Resource, res.staging_resource.ppv())))
+	std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> placed_footprints;
+	if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
 	{
-		LOGE("Failed to create resource.\n");
-		return {};
+		uint32_t num_subresources = desc.MipLevels;
+		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+			num_subresources *= desc.DepthOrArraySize;
+
+		UINT64 total_bytes = 0;
+		placed_footprints.resize(num_subresources);
+		device->GetCopyableFootprints(&desc, 0, num_subresources, 0, placed_footprints.data(), nullptr, nullptr, &total_bytes);
+		if (total_bytes == UINT64_MAX)
+			return {};
+
+		D3D12_RESOURCE_DESC upload_desc = {};
+		upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		upload_desc.Format = DXGI_FORMAT_UNKNOWN;
+		upload_desc.Width = total_bytes;
+		upload_desc.Height = 1;
+		upload_desc.DepthOrArraySize = 1;
+		upload_desc.MipLevels = 1;
+		upload_desc.SampleDesc.Count = 1;
+		upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		if (FAILED(device->CreateCommittedResource(
+				&heap_props, D3D12_HEAP_FLAG_NONE, &upload_desc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				IID_ID3D12Resource, res.staging_resource.ppv())))
+		{
+			LOGE("Failed to create resource.\n");
+			return {};
+		}
+	}
+	else
+	{
+		if (FAILED(device->CreateCommittedResource(
+				&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
+				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				IID_ID3D12Resource, res.staging_resource.ppv())))
+		{
+			LOGE("Failed to create resource.\n");
+			return {};
+		}
 	}
 
 	heap_props = {};
 	heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
-	if (FAILED(device->CreateCommittedResource(
-		&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
-		D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-		IID_ID3D12Resource, res.gpu_staging_resource.ppv())))
-	{
-		LOGE("Failed to create resource.\n");
-		return {};
-	}
 
 	if (value.HasMember("data"))
 	{
-		uint32_t subresources_to_map = 1;
-
-		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+		uint8_t *ptr = nullptr;
+		if (FAILED(res.staging_resource->Map(0, nullptr, reinterpret_cast<void **>(&ptr))))
 		{
-			subresources_to_map = desc.MipLevels;
-			if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-				subresources_to_map *= desc.DepthOrArraySize;
-
-			for (uint32_t i = 0; i < subresources_to_map; i++)
-				if (FAILED(res.staging_resource->Map(i, nullptr, nullptr)))
-					return {};
+			LOGE("Failed to map staging resource.\n");
+			return {};
 		}
 
 		for (uint32_t i = 0; i < desc.MipLevels; i++)
 		{
 			auto path = relpath(base_path, value["data"][i].GetString());
 			auto data = load_binary_file<>(path);
-			size_t src_offset = 0;
 
 			if (data.empty())
 			{
@@ -686,16 +688,7 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 					return {};
 				}
 
-				void *ptr = nullptr;
-				if (FAILED(res.staging_resource->Map(0, nullptr, &ptr)))
-				{
-					LOGE("Failed to map staging resource.\n");
-					return {};
-				}
-
 				memcpy(ptr, data.data(), data.size());
-				res.staging_resource->Unmap(0, nullptr);
-				res.dirty = true;
 			}
 			else
 			{
@@ -718,54 +711,41 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 					pixel_size = slice_bytes;
 				}
 
-				// TODO: Depth-stencil planes change this too.
-				D3D12_BOX dst_box = {};
-				dst_box.right = std::max<uint32_t>(desc.Width >> i, 1u);
-				dst_box.bottom = std::max<uint32_t>(desc.Height >> i, 1u);
+				size_t data_offset = 0;
+				uint32_t num_layers = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
 
-				uint32_t num_blocks_x = (dst_box.right + block_width - 1) / block_width;
-				uint32_t num_blocks_y = (dst_box.bottom + block_height - 1) / block_height;
-
-				uint32_t src_row_pitch = num_blocks_x * pixel_size;
-				uint32_t src_slice_pitch = num_blocks_x * num_blocks_y * pixel_size;
-
-				if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+				for (uint32_t layer = 0; layer < num_layers; layer++)
 				{
-					dst_box.back = std::max<uint32_t>(desc.DepthOrArraySize >> i, 1u);
-					res.staging_resource->WriteToSubresource(
-							i, &dst_box, data.data() + src_offset, src_row_pitch, src_slice_pitch);
+					auto &footprint = placed_footprints[i + desc.MipLevels * layer];
+					uint32_t blocks_x = (footprint.Footprint.Width + block_width - 1) / block_width;
+					uint32_t blocks_y = (footprint.Footprint.Height + block_height - 1) / block_height;
+					uint32_t blocks_z = footprint.Footprint.Depth;
 
-					if (src_offset + src_slice_pitch * dst_box.back > data.size())
+					for (uint32_t z = 0; z < blocks_z; z++)
 					{
-						LOGE("Attempting to load texture out of bounds.\n");
-						return {};
+						for (uint32_t y = 0; y < blocks_y; y++)
+						{
+							if (data_offset + pixel_size * blocks_x > data.size())
+							{
+								LOGE("Data buffer is not large enough.\n");
+								return {};
+							}
+
+							memcpy(ptr + footprint.Offset +
+							       y * footprint.Footprint.RowPitch +
+							       z * footprint.Footprint.RowPitch * blocks_y,
+							       data.data() + data_offset,
+							       blocks_x * pixel_size);
+							data_offset += pixel_size * blocks_x;
+						}
 					}
 				}
-				else
-				{
-					if (src_offset + src_slice_pitch * desc.DepthOrArraySize > data.size())
-					{
-						LOGE("Attempting to load texture out of bounds.\n");
-						return {};
-					}
-
-					for (uint32_t j = 0; j < desc.DepthOrArraySize; j++)
-					{
-						dst_box.back = 1;
-						res.staging_resource->WriteToSubresource(
-								i + j * desc.MipLevels, &dst_box, data.data() + src_offset,
-								src_row_pitch, src_slice_pitch);
-						src_offset += src_slice_pitch * dst_box.back;
-					}
-				}
-
-				res.dirty = true;
 			}
 		}
 
-		if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-			for (uint32_t i = 0; i < subresources_to_map; i++)
-				res.staging_resource->Unmap(i, nullptr);
+		res.dirty = true;
+		res.staging_resource->Unmap(0, nullptr);
+		res.placed_footprints = std::move(placed_footprints);
 	}
 
 	return res;
@@ -1325,9 +1305,26 @@ void Device::execute_sync_dirty_gpu_staging()
 		barrier.Transition.Subresource = UINT32_MAX;
 		barriers.push_back(barrier);
 
-		list->CopyResource(
-			resource.resource.gpu_staging_resource.get(),
-			resource.resource.staging_resource.get());
+		if (resource.resource.gpu_staging_resource->GetDesc().Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+		{
+			list->CopyResource(
+					resource.resource.gpu_staging_resource.get(),
+					resource.resource.staging_resource.get());
+		}
+		else
+		{
+			for (size_t i = 0, n = resource.resource.placed_footprints.size(); i < n; i++)
+			{
+				D3D12_TEXTURE_COPY_LOCATION dst = {}, src = {};
+				dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+				src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+				dst.pResource = resource.resource.gpu_staging_resource.get();
+				src.pResource = resource.resource.staging_resource.get();
+				dst.SubresourceIndex = i;
+				src.PlacedFootprint = resource.resource.placed_footprints[i];
+				list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+			}
+		}
 
 		resource.resource.dirty_gpu_staging = false;
 	}
@@ -1380,33 +1377,7 @@ void Device::execute_sync_dirty()
 			barriers.push_back(barrier);
 		}
 
-		if (resource.resource.gpu_resource->GetDesc().Format == resource.resource.gpu_staging_resource->GetDesc().Format)
-		{
-			list->CopyResource(
-					resource.resource.gpu_resource.get(),
-					resource.resource.gpu_staging_resource.get());
-		}
-		else
-		{
-			// Handle special color <-> depth copies.
-			auto desc = resource.resource.gpu_resource->GetDesc();
-			uint32_t subresources = desc.MipLevels;
-			if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE3D)
-				subresources *= desc.DepthOrArraySize;
-			D3D12_TEXTURE_COPY_LOCATION dst, src;
-			dst.pResource = resource.resource.gpu_resource.get();
-			src.pResource = resource.resource.gpu_staging_resource.get();
-			dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-			src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-
-			for (uint32_t i = 0; i < subresources; i++)
-			{
-				dst.SubresourceIndex = i;
-				src.SubresourceIndex = i;
-				list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-			}
-		}
-
+		list->CopyResource(resource.resource.gpu_resource.get(), resource.resource.gpu_staging_resource.get());
 		resource.resource.dirty = false;
 	}
 
