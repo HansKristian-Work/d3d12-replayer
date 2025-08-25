@@ -1437,15 +1437,24 @@ bool Device::execute_dispatch(const rapidjson::Value &doc, uint32_t iteration)
 	for (auto itr = params.Begin(); itr != params.End(); ++itr)
 	{
 		auto &param = *itr;
-		if (!param.HasMember("type") || !param.HasMember("index") || !param.HasMember("offset"))
+		if (!param.HasMember("type") || !param.HasMember("index"))
 		{
-			LOGE("Missing type, index, offset fields.\n");
+			LOGE("Missing type, index fields.\n");
+			return false;
+		}
+
+		if (!param.HasMember("offset") && strcmp(param["type"].GetString(), "Constant") != 0)
+		{
+			LOGE("Missing type, index, offset field.\n");
 			return false;
 		}
 
 		const char *type = param["type"].GetString();
-		uint64_t offset = param["offset"].GetUint64();
 		uint32_t index = param["index"].GetUint();
+
+		uint64_t offset = 0;
+		if (param.HasMember("offset"))
+			offset = param["offset"].GetUint64();
 
 		if (strcmp(type, "ResourceTable") == 0)
 		{
@@ -1458,6 +1467,29 @@ bool Device::execute_dispatch(const rapidjson::Value &doc, uint32_t iteration)
 			D3D12_GPU_DESCRIPTOR_HANDLE desc = sampler_heap->GetGPUDescriptorHandleForHeapStart();
 			desc.ptr += offset * device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 			list->SetComputeRootDescriptorTable(index, desc);
+		}
+		else if (strcmp(type, "Constant") == 0)
+		{
+			uint32_t data[64];
+			uint32_t count = 0;
+			auto &pushdata = param["data"];
+			if (!pushdata.IsArray())
+			{
+				LOGE("data parameter for Constant must be an array.\n");
+				return false;
+			}
+
+			for (auto dataitr = pushdata.Begin(); dataitr != pushdata.End(); ++dataitr)
+			{
+				if (count >= 64)
+				{
+					LOGE("Too much data in root parameter block.\n");
+					return false;
+				}
+				data[count++] = dataitr->GetUint();
+			}
+
+			list->SetComputeRoot32BitConstants(index, count, data, 0);
 		}
 		else
 		{
