@@ -1322,6 +1322,7 @@ void Device::execute_sync_dirty_gpu_staging()
 		barrier.Transition.pResource = resource.resource.gpu_staging_resource.get();
 		barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+		barrier.Transition.Subresource = UINT32_MAX;
 		barriers.push_back(barrier);
 
 		list->CopyResource(
@@ -1351,6 +1352,7 @@ void Device::execute_sync_dirty()
 			barrier.Transition.pResource = resource.resource.gpu_resource.get();
 			barrier.Transition.StateBefore = resource.resource.current_state;
 			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			barrier.Transition.Subresource = UINT32_MAX;
 			resource.resource.current_state = D3D12_RESOURCE_STATE_COPY_DEST;
 			barriers.push_back(barrier);
 		}
@@ -1373,6 +1375,7 @@ void Device::execute_sync_dirty()
 			barrier.Transition.pResource = resource.resource.gpu_resource.get();
 			barrier.Transition.StateBefore = resource.resource.current_state;
 			barrier.Transition.StateAfter = resource.resource.execution_state;
+			barrier.Transition.Subresource = UINT32_MAX;
 			resource.resource.current_state = resource.resource.execution_state;
 			barriers.push_back(barrier);
 		}
