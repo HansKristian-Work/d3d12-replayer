@@ -541,7 +541,7 @@ PipelineState Device::create_compute_shader(const std::string &path, const std::
 Resource Device::create_resource_from_desc(const std::string &base_path, const rapidjson::Value &value)
 {
 	D3D12_HEAP_PROPERTIES heap_props = {};
-	D3D12_RESOURCE_DESC desc = {};
+	D3D12_RESOURCE_DESC1 desc = {};
 	Resource res;
 
 	heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -586,9 +586,46 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 		return {};
 	}
 
-	if (FAILED(device->CreateCommittedResource(
-			&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
-			D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+	ComPtr<ID3D12Device10> device10;
+	if (FAILED(device->QueryInterface(IID_ID3D12Device10, device10.ppv())))
+	{
+		LOGE("Failed to query ID3D12Device10. AgilitySDK dlls might not be present?\n");
+		return {};
+	}
+
+	D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12;
+	if (FAILED(device10->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12))))
+	{
+		LOGE("Failed to query OPTIONS12.\n");
+		return {};
+	}
+
+	if (!options12.RelaxedFormatCastingSupported)
+	{
+		LOGE("RelaxedFormatCasting not supported.\n");
+		return {};
+	}
+
+	// For simplicity, use legacy barriers. Resource has to be in COMMON layout to move in and out of the models.
+	// It's very unclear from D3D12 docs if initial layout has any meaning w.r.t this rule though ...
+	auto barrier_layout =
+			desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ?
+			D3D12_BARRIER_LAYOUT_UNDEFINED : D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON;
+
+	std::vector<DXGI_FORMAT> castable;
+	if (value.HasMember("CastFormats"))
+	{
+		auto &cast_formats = value["CastFormats"];
+		for (auto itr = cast_formats.Begin(); itr != cast_formats.End(); ++itr)
+			castable.push_back(convert_dxgi_format(itr->GetString()));
+	}
+
+	std::sort(castable.begin(), castable.end());
+	castable.erase(std::unique(castable.begin(), castable.end()), castable.end());
+
+	if (FAILED(device10->CreateCommittedResource3(
+			&heap_props, D3D12_HEAP_FLAG_NONE, &desc, barrier_layout, nullptr, nullptr,
+			castable.size(), castable.data(),
 			IID_ID3D12Resource, res.gpu_resource.ppv())))
 	{
 		LOGE("Failed to create resource.\n");
@@ -596,9 +633,9 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 	}
 
 	// Keep the copy on GPU for fast refreshes of UAVs.
-	if (FAILED(device->CreateCommittedResource(
-			&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
-			D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+	if (FAILED(device10->CreateCommittedResource3(
+			&heap_props, D3D12_HEAP_FLAG_NONE, &desc, barrier_layout, nullptr, nullptr,
+			castable.size(), castable.data(),
 			IID_ID3D12Resource, res.gpu_staging_resource.ppv())))
 	{
 		LOGE("Failed to create resource.\n");
@@ -621,11 +658,23 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 
 		UINT64 total_bytes = 0;
 		placed_footprints.resize(num_subresources);
-		device->GetCopyableFootprints(&desc, 0, num_subresources, 0, placed_footprints.data(), nullptr, nullptr, &total_bytes);
+
+		D3D12_RESOURCE_DESC desc0 = {};
+		desc0.Width = desc.Width;
+		desc0.Height = desc.Height;
+		desc0.DepthOrArraySize = desc.DepthOrArraySize;
+		desc0.MipLevels = desc.MipLevels;
+		desc0.SampleDesc = desc.SampleDesc;
+		desc0.Layout = desc.Layout;
+		desc0.Dimension = desc.Dimension;
+		desc0.Format = desc.Format;
+		desc0.Flags = desc.Flags;
+		device->GetCopyableFootprints(&desc0, 0, num_subresources, 0, placed_footprints.data(),
+		                              nullptr, nullptr, &total_bytes);
 		if (total_bytes == UINT64_MAX)
 			return {};
 
-		D3D12_RESOURCE_DESC upload_desc = {};
+		D3D12_RESOURCE_DESC1 upload_desc = {};
 		upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 		upload_desc.Format = DXGI_FORMAT_UNKNOWN;
 		upload_desc.Width = total_bytes;
@@ -635,9 +684,9 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 		upload_desc.SampleDesc.Count = 1;
 		upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-		if (FAILED(device->CreateCommittedResource(
+		if (FAILED(device10->CreateCommittedResource3(
 				&heap_props, D3D12_HEAP_FLAG_NONE, &upload_desc,
-				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				D3D12_BARRIER_LAYOUT_UNDEFINED, nullptr, nullptr, 0, nullptr,
 				IID_ID3D12Resource, res.staging_resource.ppv())))
 		{
 			LOGE("Failed to create resource.\n");
@@ -646,9 +695,9 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 	}
 	else
 	{
-		if (FAILED(device->CreateCommittedResource(
+		if (FAILED(device10->CreateCommittedResource3(
 				&heap_props, D3D12_HEAP_FLAG_NONE, &desc,
-				D3D12_RESOURCE_STATE_COMMON, nullptr,
+				D3D12_BARRIER_LAYOUT_UNDEFINED, nullptr, nullptr, 0, nullptr,
 				IID_ID3D12Resource, res.staging_resource.ppv())))
 		{
 			LOGE("Failed to create resource.\n");
