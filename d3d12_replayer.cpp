@@ -450,7 +450,7 @@ struct Device
 	ComPtr<ID3D12Fence> fence;
 	ComPtr<ID3D12GraphicsCommandList> list;
 
-	enum { NumFrameContexts = 2 };
+	enum { NumFrameContexts = 4 };
 	struct
 	{
 		ComPtr<ID3D12CommandAllocator> allocator;
