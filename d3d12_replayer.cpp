@@ -3,6 +3,7 @@
  */
 
 #define NOMINMAX
+#define _LARGEFILE_SOURCE
 
 #define INITGUID
 
@@ -43,11 +44,7 @@
 using Granite::Path::relpath;
 
 #ifdef _WIN32
-#ifdef _MSC_VER
 #define DLLEXPORT __declspec(dllexport) extern
-#else
-#define DLLEXPORT __attribute__((visibility("default")))
-#endif
 extern "C" {
 DLLEXPORT const UINT D3D12SDKVersion = 616;
 DLLEXPORT const char *D3D12SDKPath = u8".\\D3D12\\";
@@ -404,8 +401,14 @@ static std::vector<T> load_binary_file(const std::string &path)
 		return {};
 	}
 
+#ifdef _WIN32
+	_fseeki64(f, 0, SEEK_END);
+	size_t len = _ftelli64(f);
+#else
 	fseek(f, 0, SEEK_END);
 	size_t len = ftell(f);
+#endif
+
 	rewind(f);
 
 	std::vector<T> t;
@@ -610,7 +613,7 @@ Resource Device::create_resource_from_desc(const std::string &base_path, const r
 	// It's very unclear from D3D12 docs if initial layout has any meaning w.r.t this rule though ...
 	auto barrier_layout =
 			desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER ?
-			D3D12_BARRIER_LAYOUT_UNDEFINED : D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON;
+			D3D12_BARRIER_LAYOUT_UNDEFINED : D3D12_BARRIER_LAYOUT_COMMON;
 
 	std::vector<DXGI_FORMAT> castable;
 	if (value.HasMember("CastFormats"))
@@ -1254,7 +1257,7 @@ bool Device::create_sampler_descriptors(const rapidjson::Value &samplers)
 			return false;
 		}
 
-		auto handle = resource_heap->GetCPUDescriptorHandleForHeapStart();
+		auto handle = sampler_heap->GetCPUDescriptorHandleForHeapStart();
 		handle.ptr += sampler["HeapOffset"].GetUint64() * desc_size;
 
 		device->CreateSampler(&sampler_desc, handle);
@@ -1883,6 +1886,31 @@ static void print_help()
 	LOGI("d3d12-replayer [--d3d12 <path>] [--json <path to JSON>] [--validate] [--iterations <count>] [--dispatches <count>]\n");
 }
 
+static bool check_agility_sdk_support(ID3D12Device *device)
+{
+	ComPtr<ID3D12Device10> device10;
+	if (FAILED(device->QueryInterface(IID_ID3D12Device10, device10.ppv())))
+	{
+		LOGE("Failed to query ID3D12Device10. AgilitySDK dlls might not be present?\n");
+		return false;
+	}
+
+	D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12;
+	if (FAILED(device10->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12))))
+	{
+		LOGE("Failed to query OPTIONS12.\n");
+		return false;
+	}
+
+	if (!options12.RelaxedFormatCastingSupported)
+	{
+		LOGE("RelaxedFormatCasting not supported.\n");
+		return false;
+	}
+
+	return true;
+}
+
 int main(int argc, char **argv)
 {
 	unsigned dispatches_per_iteration = 1;
@@ -1909,6 +1937,13 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
+	if (json.empty())
+	{
+		LOGE("Need to provide path to JSON.\n");
+		print_help();
+		return EXIT_FAILURE;
+	}
+
 	if (d3d12.empty())
 		d3d12 = "d3d12.dll";
 
@@ -1916,6 +1951,12 @@ int main(int argc, char **argv)
 	if (!device.device)
 	{
 		LOGE("Failed to create device.\n");
+		return EXIT_FAILURE;
+	}
+
+	if (!check_agility_sdk_support(device.device.get()))
+	{
+		LOGE("AgilitySDK runtime is not loaded.\n");
 		return EXIT_FAILURE;
 	}
 

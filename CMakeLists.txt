@@ -35,7 +35,15 @@ if (NOT WIN32)
     target_link_libraries(d3d12-replayer PRIVATE dl)
 endif()
 
+if (WIN32)
+    add_custom_command(TARGET d3d12-replayer POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/D3D12 $<TARGET_FILE_DIR:d3d12-replayer>/D3D12)
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/D3D12 DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+install(TARGETS d3d12-replayer)
+
 if (WIN32 AND CMAKE_COMPILER_IS_GNUCXX)
-	target_link_libraries(d3d12-replayer PRIVATE -static gcc stdc++ winpthread)
+    target_link_libraries(d3d12-replayer PRIVATE -static gcc stdc++ winpthread)
 endif()
 
