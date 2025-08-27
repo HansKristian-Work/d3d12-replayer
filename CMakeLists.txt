@@ -27,9 +27,21 @@ add_executable(d3d12-replayer d3d12_replayer.cpp
         path_utils.cpp path_utils.hpp
         string_helpers.cpp string_helpers.hpp
         logging.cpp logging.hpp)
-target_include_directories(d3d12-replayer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(d3d12-replayer PRIVATE ${D3D12_REPLAYER_CXX_FLAGS})
 target_link_libraries(d3d12-replayer PRIVATE d3d12-replayer-rapidjson SDL3-static Vulkan::Headers)
+
+include(FindPkgConfig)
+pkg_check_modules(VKD3D_PROTON IMPORTED_TARGET libvkd3d-proton-d3d12)
+
+if (VKD3D_PROTON_FOUND)
+    message("Using system vkd3d-proton install.")
+    target_link_libraries(d3d12-replayer PRIVATE PkgConfig::VKD3D_PROTON)
+    target_compile_definitions(d3d12-replayer PRIVATE VKD3D_PROTON_SYSTEM)
+else()
+    message("Dynamically loading D3D12 implementation in runtime.")
+    # Use vendored headers and dynamically load.
+    target_include_directories(d3d12-replayer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+endif()
 
 if (NOT WIN32)
     target_link_libraries(d3d12-replayer PRIVATE dl)

@@ -1694,6 +1694,9 @@ bool Device::execute_iteration(const rapidjson::Value &doc, uint32_t dispatches_
 
 static Device create_device(const std::string &path, bool validate)
 {
+	Device device;
+
+#ifndef VKD3D_PROTON_SYSTEM
 	void *module = dlopen(path.c_str(), RTLD_NOW);
 	if (!module)
 	{
@@ -1719,12 +1722,20 @@ static Device create_device(const std::string &path, bool validate)
 		return {};
 	}
 
-	Device device;
 	if (FAILED(create(nullptr, D3D_FEATURE_LEVEL_12_0, IID_ID3D12Device, device.device.ppv())))
 	{
 		fprintf(stderr, "Failed to create device.\n");
 		return {};
 	}
+#else
+	(void)path;
+	(void)validate;
+	if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_ID3D12Device, device.device.ppv())))
+	{
+		fprintf(stderr, "Failed to create device.\n");
+		return {};
+	}
+#endif
 
 	auto *dev = device.device.get();
 
