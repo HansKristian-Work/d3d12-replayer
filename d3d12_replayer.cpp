@@ -450,6 +450,7 @@ struct Device
 	ComPtr<ID3D12Fence> fence;
 	ComPtr<ID3D12GraphicsCommandList> list;
 
+	enum { NumFrameContexts = 2 };
 	struct
 	{
 		ComPtr<ID3D12CommandAllocator> allocator;
@@ -457,7 +458,7 @@ struct Device
 		ComPtr<ID3D12Resource> timestamp_readback;
 		uint64_t fence_value_for_iteration = 0;
 		uint32_t pending_timestamps = 0;
-	} frame_contexts[2] = {};
+	} frame_contexts[NumFrameContexts] = {};
 
 	uint32_t frame_index = 0;
 	uint64_t latest_fence_value = 0;
@@ -1687,6 +1688,7 @@ bool Device::execute_iteration(const rapidjson::Value &doc, uint32_t dispatches_
 
 	queue->Signal(fence.get(), ++latest_fence_value);
 	ctx.fence_value_for_iteration = latest_fence_value;
+	frame_index = (frame_index + 1) % NumFrameContexts;
 	return true;
 }
 
