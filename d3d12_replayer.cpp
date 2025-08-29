@@ -29,6 +29,7 @@
 #include "vkd3d_d3d12sdklayers.h"
 #include "vkd3d_dxgi1_5.h"
 #include "vkd3d_swapchain_factory.h"
+#include "vkd3d_core_interface.h"
 
 #include "cli_parser.hpp"
 #include "com_ptr.hpp"
@@ -1692,7 +1693,7 @@ bool Device::execute_iteration(const rapidjson::Value &doc, uint32_t dispatches_
 	return true;
 }
 
-static Device create_device(const std::string &path, bool validate)
+static Device create_device(const std::string &path, bool validate, bool vkd3d_proton)
 {
 	Device device;
 
@@ -1704,28 +1705,51 @@ static Device create_device(const std::string &path, bool validate)
 		return {};
 	}
 
-	if (validate)
+	// For convenience on Windows build, we just load d3d12core.dll directly and extract the private APIs.
+	if (vkd3d_proton)
 	{
-		auto get_debug_iface = (PFN_D3D12_GET_DEBUG_INTERFACE) dlsym(module, "D3D12GetDebugInterface");
-		ComPtr<ID3D12Debug> debug;
-		if (SUCCEEDED(get_debug_iface(IID_ID3D12Debug, debug.ppv())))
+		auto get_interface = (PFN_D3D12_GET_INTERFACE) dlsym(module, "D3D12GetInterface");
+		if (!get_interface)
+			return {};
+
+		IVKD3DCoreInterface *iface;
+		if (FAILED(get_interface(CLSID_VKD3DCore, IID_IVKD3DCoreInterface, (void **)&iface)))
 		{
-			LOGI("Enabling validation.\n");
-			debug->EnableDebugLayer();
+			LOGE("%s does not look like a vkd3d-proton d3d12core.dll.\n", path.c_str());
+			return {};
+		}
+
+		if (FAILED(iface->CreateDevice(nullptr, D3D_FEATURE_LEVEL_12_0, IID_ID3D12Device, device.device.ppv())))
+		{
+			fprintf(stderr, "Failed to create device.\n");
+			return {};
 		}
 	}
-
-	auto create = (PFN_D3D12_CREATE_DEVICE)dlsym(module, "D3D12CreateDevice");
-	if (!create)
+	else
 	{
-		LOGE("Failed to query symbol.\n");
-		return {};
-	}
+		if (validate)
+		{
+			auto get_debug_iface = (PFN_D3D12_GET_DEBUG_INTERFACE) dlsym(module, "D3D12GetDebugInterface");
+			ComPtr<ID3D12Debug> debug;
+			if (SUCCEEDED(get_debug_iface(IID_ID3D12Debug, debug.ppv())))
+			{
+				LOGI("Enabling validation.\n");
+				debug->EnableDebugLayer();
+			}
+		}
 
-	if (FAILED(create(nullptr, D3D_FEATURE_LEVEL_12_0, IID_ID3D12Device, device.device.ppv())))
-	{
-		fprintf(stderr, "Failed to create device.\n");
-		return {};
+		auto create = (PFN_D3D12_CREATE_DEVICE) dlsym(module, "D3D12CreateDevice");
+		if (!create)
+		{
+			LOGE("Failed to query symbol.\n");
+			return {};
+		}
+
+		if (FAILED(create(nullptr, D3D_FEATURE_LEVEL_12_0, IID_ID3D12Device, device.device.ppv())))
+		{
+			fprintf(stderr, "Failed to create device.\n");
+			return {};
+		}
 	}
 #else
 	(void)path;
@@ -1896,7 +1920,7 @@ bool Device::init_swapchain(SDL_Window *window)
 
 static void print_help()
 {
-	LOGI("d3d12-replayer [--d3d12 <path>] [--json <path to JSON>] [--validate] [--iterations <count>] [--dispatches <count>]\n");
+	LOGI("d3d12-replayer [--d3d12 <path>] [--vkd3d-proton] [--json <path to JSON>] [--validate] [--iterations <count>] [--dispatches <count>]\n");
 }
 
 static bool check_agility_sdk_support(ID3D12Device *device)
@@ -1929,6 +1953,7 @@ int main(int argc, char **argv)
 	unsigned dispatches_per_iteration = 1;
 	std::string d3d12, json;
 	bool validate = false;
+	bool vkd3d_proton = false;
 	unsigned iterations = 0;
 	Util::CLICallbacks cbs;
 
@@ -1936,6 +1961,7 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 
 	cbs.add("--d3d12", [&](Util::CLIParser &parser) { d3d12 = parser.next_string(); });
+	cbs.add("--vkd3d-proton", [&](Util::CLIParser &) { vkd3d_proton = true; });
 	cbs.add("--json", [&](Util::CLIParser &parser) { json = parser.next_string(); });
 	cbs.add("--validate", [&](Util::CLIParser &) { validate = true; });
 	cbs.add("--iterations", [&](Util::CLIParser &parser) { iterations = parser.next_uint(); });
@@ -1958,9 +1984,9 @@ int main(int argc, char **argv)
 	}
 
 	if (d3d12.empty())
-		d3d12 = "d3d12.dll";
+		d3d12 = vkd3d_proton ? "d3d12core.dll" : "d3d12.dll";
 
-	auto device = create_device(d3d12, validate);
+	auto device = create_device(d3d12, validate, vkd3d_proton);
 	if (!device.device)
 	{
 		LOGE("Failed to create device.\n");
